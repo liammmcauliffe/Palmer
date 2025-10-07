@@ -1,8 +1,6 @@
 import requests
-from bs4 import BeautifulSoup
 import json
 from datetime import datetime
-import time
 import sys
 import os
 
@@ -12,106 +10,112 @@ from api.database import SessionLocal, Hackathon, init_db
 
 class DevpostScraper:
     def __init__(self):
-        self.base_url = "https://devpost.com"
+        self.api_url = "https://devpost.com/api/hackathons"
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
 
-    def scrape_listing_page(self, url="https://devpost.com/hackathons"):
-        """Scrape the main hackathon listing page"""
-        print(f"Scraping: {url}")
+    def scrape_hackathons(self):
+        """Scrape hackathons from Devpost API"""
+        print(f"Fetching hackathons from API: {self.api_url}")
 
         try:
-            response = requests.get(url, headers=self.headers, timeout=10)
+            response = requests.get(self.api_url, headers=self.headers, timeout=10)
             response.raise_for_status()
 
-            soup = BeautifulSoup(response.content, "html.parser")
+            data = response.json()
+            hackathons = data.get("hackathons", [])
 
-            hackathon_tiles = soup.find_all("div", class_="challenge-listing")
+            print(f"Found {len(hackathons)} hackathons")
 
-            if not hackathon_tiles:
-                print("No hackathon tiles found.")
-                return []
-
-            hackathons = []
-            print(f"Found {len(hackathon_tiles)} hackathons")
-
-            for tile in hackathon_tiles:
+            parsed_hackathons = []
+            for hackathon in hackathons:
                 try:
-                    hackathon_data = self._parse_hackathon_tile(tile)
-                    if hackathon_data:
-                        hackathons.append(hackathon_data)
+                    parsed_data = self._parse_hackathon_json(hackathon)
+                    if parsed_data:
+                        parsed_hackathons.append(parsed_data)
                 except Exception as e:
-                    print(f"Error parsing tile: {e}")
+                    print(f"Error parsing hackathon: {e}")
                     continue
 
-            return hackathons
+            return parsed_hackathons
 
         except requests.RequestException as e:
-            print(f"Error fetching page: {e}")
+            print(f"Error fetching from API: {e}")
+            return []
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON response: {e}")
             return []
 
-    def _parse_hackathon_tile(self, tile):
-        """Parse individual hackathon tile from listing page"""
+    def _parse_hackathon_json(self, hack_json):
+        """Parse individual hackathon data from API JSON object"""
         data = {}
 
-        # Get title and URL
-        title_elem = tile.find("a", class_="challenge-link-overlay")
-        if title_elem:
-            data["title"] = title_elem.get("aria-label", "").strip()
-            data["url"] = self.base_url + title_elem.get("href", "")
-        else:
+        # Essential fields
+        data["title"] = hack_json.get("title", "").strip()
+        data["url"] = hack_json.get("url", "")
+
+        if not data["title"] or not data["url"]:
             return None
 
-        # Get tagline/description
-        tagline_elem = tile.find("p", class_="challenge-tagline")
-        if tagline_elem:
-            data["tagline"] = tagline_elem.text.strip()
+        # Basic info
+        data["tagline"] = hack_json.get("analytics_identifier", "")
+        data["status"] = hack_json.get("open_state", "unknown").lower()
 
-        # Get status (from status badge)
-        status_elem = tile.find("span", class_="submission-period")
-        if status_elem:
-            data["status"] = status_elem.text.strip().lower()
-        else:
-            data["status"] = "unknown"
-
-        # Get location
-        location_elem = tile.find("div", class_="challenge-location")
-        if location_elem:
-            data["location"] = location_elem.text.strip()
+        # Location
+        displayed_location = hack_json.get("displayed_location", {})
+        if isinstance(displayed_location, dict):
+            data["location"] = displayed_location.get("location", "Not specified")
         else:
             data["location"] = "Not specified"
 
-        # Get dates
-        date_elem = tile.find("div", class_="challenge-date")
-        if date_elem:
-            data["dates"] = date_elem.text.strip()
+        # Dates
+        data["submission_deadline"] = hack_json.get("submission_period_dates", "")
+        data["start_date"] = None  # Not directly available in API
+        data["end_date"] = None  # Not directly available in API
 
-        # Get prize amount
-        prize_elem = tile.find("div", class_="prize-amount")
-        if prize_elem:
-            data["prize_info"] = prize_elem.text.strip()
+        # Prize information
+        prize_amount = hack_json.get("prize_amount", "")
+        if prize_amount:
+            prize_amount = prize_amount.replace(
+                "<span data-currency-value>", ""
+            ).replace("</span>", "")
+            data["prizes"] = {"total": prize_amount}
+        else:
+            data["prizes"] = {}
 
-        # Get participant count
-        participants_elem = tile.find("div", class_="participants-count")
-        if participants_elem:
-            try:
-                count_text = participants_elem.text.strip()
-                data["participants_count"] = int(
-                    "".join(filter(str.isdigit, count_text))
-                )
-            except:
-                data["participants_count"] = 0
+        # Participants
+        data["participants_count"] = hack_json.get("registrations_count", 0)
 
-        # Get themes/tags
-        theme_elems = tile.find_all("span", class_="challenge-theme")
-        if theme_elems:
-            data["tags"] = [theme.text.strip() for theme in theme_elems]
+        # Organizer
+        data["organizer"] = hack_json.get("organization_name", "")
 
-        # Get organizer
-        organizer_elem = tile.find("div", class_="challenge-organizer")
-        if organizer_elem:
-            data["organizer"] = organizer_elem.text.strip()
+        # Tags/themes
+        themes = hack_json.get("themes", [])
+        if isinstance(themes, list):
+            data["tags"] = [
+                theme.get("name", "")
+                for theme in themes
+                if isinstance(theme, dict) and theme.get("name")
+            ]
+        else:
+            data["tags"] = []
+
+        # Additional fields
+        data["visibility"] = (
+            "invite_only" if hack_json.get("invite_only", False) else "public"
+        )
+        data["description"] = ""  # Not available in listing API
+        data["requirements"] = hack_json.get(
+            "eligibility_requirement_invite_only_description", ""
+        )
+
+        # Additional API-specific fields
+        data["featured"] = hack_json.get("featured", False)
+        data["winners_announced"] = hack_json.get("winners_announced", False)
+        data["thumbnail_url"] = hack_json.get("thumbnail_url", "")
+        data["submission_gallery_url"] = hack_json.get("submission_gallery_url", "")
+        data["time_left"] = hack_json.get("time_left_to_submission", "")
 
         return data
 
@@ -131,62 +135,103 @@ class DevpostScraper:
                 if existing:
                     # Update existing record
                     for key, value in hack_data.items():
-                        setattr(existing, key, value)
+                        if hasattr(existing, key):
+                            setattr(existing, key, value)
                     existing.updated_at = datetime.utcnow()
                     updated_count += 1
                 else:
                     # Create new record
-                    hackathon = Hackathon(
-                        url=hack_data.get("url"),
-                        title=hack_data.get("title"),
-                        tagline=hack_data.get("tagline"),
-                        status=hack_data.get("status"),
-                        location=hack_data.get("location"),
-                        participants_count=hack_data.get("participants_count", 0),
-                        organizer=hack_data.get("organizer"),
-                        tags=hack_data.get("tags", []),
-                        scraped_at=datetime.utcnow(),
-                    )
+                    hackathon_kwargs = {
+                        "url": hack_data.get("url"),
+                        "title": hack_data.get("title"),
+                        "tagline": hack_data.get("tagline"),
+                        "status": hack_data.get("status"),
+                        "location": hack_data.get("location"),
+                        "participants_count": hack_data.get("participants_count", 0),
+                        "organizer": hack_data.get("organizer"),
+                        "tags": hack_data.get("tags", []),
+                        "scraped_at": datetime.utcnow(),
+                    }
+
+                    # Add optional fields if they exist in the model and data
+                    optional_fields = [
+                        "start_date",
+                        "end_date",
+                        "submission_deadline",
+                        "visibility",
+                        "prizes",
+                        "description",
+                        "requirements",
+                    ]
+                    for field in optional_fields:
+                        if hack_data.get(field) is not None:
+                            hackathon_kwargs[field] = hack_data.get(field)
+
+                    hackathon = Hackathon(**hackathon_kwargs)
                     db.add(hackathon)
                     saved_count += 1
 
             db.commit()
-            print(f"\n Saved {saved_count} new hackathons, updated {updated_count}")
+            print(f"\nDatabase operation completed:")
+            print(f"  - Saved {saved_count} new hackathons")
+            print(f"  - Updated {updated_count} existing hackathons")
 
         except Exception as e:
             print(f"Error saving to database: {e}")
             db.rollback()
+            raise
         finally:
             db.close()
+
+    def print_sample_data(self, hackathons, count=3):
+        """Print sample hackathon data for verification"""
+        print(f"\nSample data from {len(hackathons)} hackathons:")
+        print("-" * 50)
+
+        for i, hack in enumerate(hackathons[:count]):
+            print(f"\n{i + 1}. {hack.get('title')}")
+            print(f"   URL: {hack.get('url')}")
+            print(f"   Status: {hack.get('status')}")
+            print(f"   Location: {hack.get('location')}")
+            print(f"   Organizer: {hack.get('organizer')}")
+            print(f"   Participants: {hack.get('participants_count')}")
+            print(f"   Prize: {hack.get('prizes', {}).get('total', 'N/A')}")
+            print(f"   Themes: {', '.join(hack.get('tags', []))}")
+            print(f"   Time left: {hack.get('time_left', 'N/A')}")
 
 
 def main():
     """Main execution function"""
-    print("Starting Devpost scraper...")
+    print("Starting Devpost API scraper...")
+    print("=" * 50)
 
     # Initialize database
-    init_db()
+    try:
+        init_db()
+        print("Database initialized successfully")
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+        return
 
-    # Create scraper and run
+    # Create scraper and fetch data
     scraper = DevpostScraper()
-    hackathons = scraper.scrape_listing_page()
+    hackathons = scraper.scrape_hackathons()
 
     if hackathons:
-        print(f"\nScraped {len(hackathons)} hackathons")
+        print(f"\nSuccessfully scraped {len(hackathons)} hackathons from API")
 
-        # Print sample
-        print("\nSample data:")
-        for hack in hackathons[:3]:
-            print(f"\n  Title: {hack.get('title')}")
-            print(f"  URL: {hack.get('url')}")
-            print(f"  Status: {hack.get('status')}")
-            print(f"  Location: {hack.get('location')}")
+        # Print sample data
+        scraper.print_sample_data(hackathons)
 
         # Save to database
-        print("\nSaving to database...")
-        scraper.save_to_database(hackathons)
+        print(f"\nSaving hackathons to database...")
+        try:
+            scraper.save_to_database(hackathons)
+            print("Scraping completed successfully!")
+        except Exception as e:
+            print(f"Failed to save to database: {e}")
     else:
-        print("No hackathons scraped")
+        print("No hackathons found or error occurred during scraping")
 
 
 if __name__ == "__main__":
