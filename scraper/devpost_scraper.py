@@ -1,6 +1,6 @@
 import requests
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 import sys
 import os
 
@@ -137,7 +137,7 @@ class DevpostScraper:
                     for key, value in hack_data.items():
                         if hasattr(existing, key):
                             setattr(existing, key, value)
-                    existing.updated_at = datetime.utcnow()
+                    existing.updated_at = datetime.now(UTC)
                     updated_count += 1
                 else:
                     # Create new record
@@ -150,7 +150,7 @@ class DevpostScraper:
                         "participants_count": hack_data.get("participants_count", 0),
                         "organizer": hack_data.get("organizer"),
                         "tags": hack_data.get("tags", []),
-                        "scraped_at": datetime.utcnow(),
+                        "scraped_at": datetime.now(UTC),
                     }
 
                     # Add optional fields if they exist in the model and data
