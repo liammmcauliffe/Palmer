@@ -16,36 +16,66 @@ class DevpostScraper:
         }
 
     def scrape_hackathons(self):
-        """Scrape hackathons from Devpost API"""
+        """Scrape hackathons from Devpost API with pagination"""
         print(f"Fetching hackathons from API: {self.api_url}")
 
-        try:
-            response = requests.get(self.api_url, headers=self.headers, timeout=10)
-            response.raise_for_status()
+        all_hackathons = []
+        page = 1
+        total_count = None
 
-            data = response.json()
-            hackathons = data.get("hackathons", [])
+        while True:
+            try:
+                # Make API request with page parameter
+                params = {"page": page}
+                response = requests.get(
+                    self.api_url, headers=self.headers, params=params, timeout=10
+                )
+                response.raise_for_status()
 
-            print(f"Found {len(hackathons)} hackathons")
+                data = response.json()
+                hackathons = data.get("hackathons", [])
+                meta = data.get("meta", {})
 
-            parsed_hackathons = []
-            for hackathon in hackathons:
-                try:
-                    parsed_data = self._parse_hackathon_json(hackathon)
-                    if parsed_data:
-                        parsed_hackathons.append(parsed_data)
-                except Exception as e:
-                    print(f"Error parsing hackathon: {e}")
-                    continue
+                # Get total count from first page
+                if total_count is None:
+                    total_count = meta.get("total_count", 0)
+                    per_page = meta.get("per_page", 9)
+                    total_pages = (
+                        total_count + per_page - 1
+                    ) // per_page  # Ceiling division
+                    print(
+                        f"Found {total_count} total hackathons across {total_pages} pages"
+                    )
 
-            return parsed_hackathons
+                print(f"Fetching page {page}... ({len(hackathons)} hackathons)")
 
-        except requests.RequestException as e:
-            print(f"Error fetching from API: {e}")
-            return []
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON response: {e}")
-            return []
+                # If no hackathons on this page, we're done
+                if not hackathons:
+                    break
+
+                # Parse hackathons from current page
+                for hackathon in hackathons:
+                    try:
+                        parsed_data = self._parse_hackathon_json(hackathon)
+                        if parsed_data:
+                            all_hackathons.append(parsed_data)
+                    except Exception as e:
+                        print(f"Error parsing hackathon: {e}")
+                        continue
+
+                page += 1
+
+            except requests.RequestException as e:
+                print(f"Error fetching page {page} from API: {e}")
+                break
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON response for page {page}: {e}")
+                break
+
+        print(
+            f"Successfully scraped {len(all_hackathons)} hackathons from {page - 1} pages"
+        )
+        return all_hackathons
 
     def _parse_hackathon_json(self, hack_json):
         """Parse individual hackathon data from API JSON object"""
